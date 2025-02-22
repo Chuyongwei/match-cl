@@ -117,7 +117,7 @@ train_arg.add_argument( #liyp
     "--scheduler", type=float, default=None, help=""
     "update learning rate")
 train_arg.add_argument(
-    "--train_batch_size", type=int, default=64, help=""
+    "--train_batch_size", type=int, default=2, help=""
     "batch size")
 #获取GPU的ID
 #train_arg.add_argument(

@@ -15,6 +15,7 @@ from warmupMultiStepLR import WarmupMultiStepLR
 def train_step(step, optimizer, model, match_loss, data, scheduler):
     model.train()
 
+    # 训练
     res_logits, res_e_hat = model(data)
     loss = 0
     loss_val = []

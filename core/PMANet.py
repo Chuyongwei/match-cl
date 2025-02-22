@@ -2,34 +2,39 @@ import torch
 import torch.nn as nn
 from loss import batch_episym
 from torch.autograd import Variable
+
+# 获取数据
 def knn(x, k):
     inner = -2 * torch.matmul(x.transpose(2, 1), x)
     xx = torch.sum(x ** 2, dim=1, keepdim=True)
     pairwise_distance = -xx - inner - xx.transpose(2, 1)
+    # 用于从张量中提取前 K 个最大（或最小）的元素及其对应的索引。它在处理排序、选择最大值或最小值以及生成推荐系统等任务中非常有用
     idx = pairwise_distance.topk(k=k, dim=-1)[1]
     return idx
 
-
-
+# 获得图特征
 def get_graph_feature(x, k=20, idx=None):
     batch_size = x.size(0)
     num_pts = x.size(2)
-    x = x.view(batch_size, -1, num_pts) 
+    x = x.view(batch_size, -1, num_pts)
     if idx is None:
+        # 4 2000 20
         idx_out = knn(x, k=k)
     else:
         idx_out = idx
     device = torch.device('cuda')
 
-    idx_base = torch.arange(0, batch_size, device=device).view(-1, 1, 1) * num_pts 
+    # （4 1 1）0 2000 4000 6000
+    idx_base = torch.arange(0, batch_size, device=device).view(-1, 1, 1) * num_pts
 
+    # 4 2000 20
     idx = idx_out + idx_base
 
+    # 160000
     idx = idx.view(-1)
 
     _, num_dims, _ = x.size()
 
-    # 4 2000 64
     x = x.transpose(2, 1).contiguous()  
     feature = x.view(batch_size * num_pts, -1)[idx, :]
     feature = feature.view(batch_size, num_pts, k, num_dims) 
@@ -42,26 +47,40 @@ def get_graph_feature(x, k=20, idx=None):
 
 
 ###########################################################################################
-class PAM_Module(nn.Module):#
-    def __init__(self,in_dim):#128 ,64
+class PAM_Module(nn.Module):  #
+    def __init__(self, in_dim):  # 64
         nn.Module.__init__(self)
-        self.query=nn.Conv2d(in_channels=in_dim,out_channels=in_dim // 8, kernel_size=1)
+        # 64 8
+        self.query = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
         self.key = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
-        self.value = nn.Conv2d(in_channels=in_dim, out_channels=in_dim , kernel_size=1)
-        self.softmax=nn.Softmax (dim=-1)
+        self.value = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.softmax = nn.Softmax(dim=-1)
+        # TODO tensor拓展
         self.gamma1 = nn.Parameter(torch.zeros(1))
 
     def forward(self, x):
-        b,c,h,w=x.size()
-        q=self.query(x).view(b,-1,w*h)
-        q=q.permute(0,2,1)
-        k=self.key(x).view(b,-1,w*h)
-        energy=torch.bmm(q,k)
-        attention=self.softmax(energy)
+        # 4 64 2000 1
+        b, c, h, w = x.size()
+        # 4 8 2000
+        q = self.query(x).view(b, -1, w * h)
+        # 4 2000 8
+        q = q.permute(0, 2, 1)
+        # 4 8 2000
+        k = self.key(x).view(b, -1, w * h)
+        # 矩阵乘法 q(4 2000 8) x k(4 8 2000)=(4 2000 2000)
+        energy = torch.bmm(q, k)
+        # 针对第四维度归一化
+        # 4 2000 2000
+        attention = self.softmax(energy)
+        # 4 64 2000
         v = self.value(x).view(b, -1, w * h)
-        out=torch.bmm(v,attention.permute(0,2,1))
-        out=out.view(b,c,h,w)
-        out=self.gamma1 *out+x
+        # 矩阵乘法 v(4 64 2000) x attention(4 2000 2000) = (4 64 2000)
+        out = torch.bmm(v, attention.permute(0, 2, 1))
+
+        # (4 64 1 2000)
+        out = out.view(b, c, h, w)
+        #
+        out = self.gamma1 * out + x
         return out
 
 
@@ -75,15 +94,25 @@ class CAM_Module(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x):
+        # 4 64 2000 1
         m_batchsize, C, height, width = x.size()
+        # 4 64 2000
         proj_query = x.view(m_batchsize, C, -1)
+        # 4 2000 64
         proj_key = x.view(m_batchsize, C, -1).permute(0, 2, 1)
+        # 自乘 4 64 64
         energy = torch.bmm(proj_query, proj_key)
+        # 获取每个组中最大值 4 64 1
         energy_new = torch.max(energy, -1, keepdim=True)
+        # 扩展函数
         energy_new = energy_new[0].expand_as(energy)
+        # 获取差值
         energy_new = energy_new - energy
+        # 4 64 64
         attention = self.softmax(energy_new)
+        # 4 64 2000
         proj_value = x.view(m_batchsize, C, -1)
+        # 4 64 2000
         out = torch.bmm(attention, proj_value)
         out = out.view(m_batchsize, C, height, width)
 
@@ -111,10 +140,8 @@ class h_swish(nn.Module):
         return x * self.sigmoid(x)
 
 
-
-
 class transformer(nn.Module):
-    def __init__(self, in_channel,out_channels):#channels=128
+    def __init__(self, in_channel, out_channels):  # channels=128
         nn.Module.__init__(self)
         self.att1 = nn.Sequential(
             nn.InstanceNorm2d(in_channel, eps=1e-3),
@@ -125,27 +152,33 @@ class transformer(nn.Module):
         self.attq1 = nn.Conv2d(out_channels, out_channels, kernel_size=1)
         self.attk1 = nn.Conv2d(out_channels, out_channels, kernel_size=1)
         self.attv1 = nn.Conv2d(out_channels, out_channels, kernel_size=1)
-        self.att2 = ResNet_Block(in_channel,out_channels,pre=True)
+        self.att2 = ResNet_Block(in_channel, out_channels, pre=True)
         self.gamma1 = nn.Parameter(torch.ones(1))
 
     def forward(self, x_row, x_local):
-        x_local = self.att1(x_local) 
-        q = self.attq1(x_row)  
-        k = self.attk1(x_local) 
-        v = self.attv1(x_local)  
-        att = torch.mul(q, k)
-        att = torch.softmax(att, dim=3)  
-        qv = torch.mul(att, v) 
-        out_local = torch.sum(qv, dim=3).unsqueeze(3)  
-        out_local=torch.cat((x_row,out_local),dim=1)
-        out_local=self.att2(out_local)
-        out = x_row + self.gamma1 * out_local  
+        # 4 64 2000 1
+        # 4 64 2000 20
+        x_local = self.att1(x_local)
 
-        return (out+out.mean(dim=1,keepdim=True))*0.5
+        q = self.attq1(x_row)
+        k = self.attk1(x_local)
+        v = self.attv1(x_local)
+        att = torch.mul(q, k)
+        att = torch.softmax(att, dim=3)
+        # 4 64 2000 20
+        qv = torch.mul(att, v)
+        out_local = torch.sum(qv, dim=3).unsqueeze(3)
+        out_local = torch.cat((x_row, out_local), dim=1)
+        out_local = self.att2(out_local)
+        # 4 64 2000 1
+        out = x_row + self.gamma1 * out_local
+
+        return (out + out.mean(dim=1, keepdim=True)) * 0.5
 
 
 
 class MLPs(nn.Module):
+    # 多层处理
     def __init__(self, channels, out_channels=None):
         nn.Module.__init__(self)
         self.conv = nn.Sequential(
@@ -153,7 +186,7 @@ class MLPs(nn.Module):
                 nn.BatchNorm2d(channels),
                 nn.ReLU(),
                 nn.Conv2d(channels, out_channels, kernel_size=1),
-                )
+        )
     def forward(self,x):
         out = self.conv(x)
         return out
@@ -162,11 +195,14 @@ class ContextNorm(nn.Module):
     def __init__(self, channels, out_channels=None):
         nn.Module.__init__(self)
         if not out_channels:
+           # 2*128 = 256
            out_channels = channels
         self.shot_cut = None
         if out_channels != channels:
             self.shot_cut = nn.Conv2d(channels, out_channels, kernel_size=1)
+            # TODO:需要研究
         self.conv = nn.Sequential(
+            #256
                 nn.InstanceNorm2d(channels, eps=1e-3),
                 nn.BatchNorm2d(channels),
                 nn.ReLU(),
@@ -177,10 +213,12 @@ class ContextNorm(nn.Module):
                 nn.Conv2d(out_channels, out_channels, kernel_size=1)
                 )
     def forward(self, x):
+        # 4 256 2000 1
         out = self.conv(x)
         if self.shot_cut:
             out = out + self.shot_cut(x)
         else:
+            # 4 128 2000 1
             out = out + x
         return out
 
@@ -222,6 +260,8 @@ class OAFilter(nn.Module):
                 nn.Conv2d(out_channels, out_channels, kernel_size=1)
             )
     def forward(self, x):
+        # 4 128 500 1
+        # 4 500 128 1
         out = self.conv1(x)
         y=self.conv2(out)
         out = out + self.conv2(out)
@@ -230,7 +270,7 @@ class OAFilter(nn.Module):
             out = out + self.shot_cut(x)
         else:
             out = out + x
-        return out  
+        return out
 
 class OAFilterBottleneck(nn.Module):
     def __init__(self, channels, points1, points2, out_channels=None):
@@ -271,36 +311,44 @@ class OAFilterBottleneck(nn.Module):
             out = out + x
         return out
 
+
 class diff_pool(nn.Module):
     def __init__(self, in_channel, output_points):
         nn.Module.__init__(self)
         self.output_points = output_points
-        self.conv = nn.Sequential( 
-                nn.InstanceNorm2d(in_channel, eps=1e-3),
-                nn.BatchNorm2d(in_channel),
-                nn.ReLU(),
-                nn.Conv2d(in_channel, output_points, kernel_size=1))
-        
+        self.conv = nn.Sequential(
+            nn.InstanceNorm2d(in_channel, eps=1e-3),
+            nn.BatchNorm2d(in_channel),
+            nn.ReLU(),
+            nn.Conv2d(in_channel, output_points, kernel_size=1))
+
     def forward(self, x):
+        # 4 128 2000 1
+        # 4 500 2000 1
         embed = self.conv(x)
+        # 取得极大值
         S = torch.softmax(embed, dim=2).squeeze(3)
-        out = torch.matmul(x.squeeze(3), S.transpose(1,2)).unsqueeze(3)
+        # x和S相乘
+        out = torch.matmul(x.squeeze(3), S.transpose(1, 2)).unsqueeze(3)
         return out
+
 
 class diff_unpool(nn.Module):
     def __init__(self, in_channel, output_points):
         nn.Module.__init__(self)
         self.output_points = output_points
         self.conv = nn.Sequential(
-                nn.InstanceNorm2d(in_channel, eps=1e-3),
-                nn.BatchNorm2d(in_channel),
-                nn.ReLU(),
-                nn.Conv2d(in_channel, output_points, kernel_size=1))
-        
-    def forward(self, x_up, x_down):
+            nn.InstanceNorm2d(in_channel, eps=1e-3),
+            nn.BatchNorm2d(in_channel),
+            nn.ReLU(),
+            nn.Conv2d(in_channel, output_points, kernel_size=1))
 
+    def forward(self, x_up, x_down):
+        # 卷积
         embed = self.conv(x_up)
+        # 提取
         S = torch.softmax(embed, dim=1).squeeze(3)
+        # x——down和S相乘
         out = torch.matmul(x_down.squeeze(3), S).unsqueeze(3)
         return out
 
@@ -350,7 +398,6 @@ class prit(nn.Module):
         data22 = self.conv22(e)  
 
         f = torch.cat((data2, data22), dim=1)
-
 
         return f
 
@@ -479,23 +526,33 @@ class MS2DNET(nn.Module):
         nn.Module.__init__(self)
         self.iter_num = config.iter_num
         self.gamma = nn.Parameter(torch.zeros(1))
-        depth_each_stage = config.net_depth//(config.iter_num+1)
-        self.side_channel = (config.use_ratio==2) + (config.use_mutual==2)#0
-        self.weights_init = MS2DGBlock(config.net_channels, 4+self.side_channel, depth_each_stage, config.clusters)
-        self.weights_iter = [MS2DGBlock(config.net_channels, 6+self.side_channel, depth_each_stage, config.clusters) for _ in range(config.iter_num)]
+        # 12//(1+1)=8
+        depth_each_stage = config.net_depth // (config.iter_num + 1)
+        self.side_channel = (config.use_ratio == 2) + (config.use_mutual == 2)  # 0
+        # 128 4 8 500
+        self.weights_init = MS2DGBlock(config.net_channels, 4 + self.side_channel, depth_each_stage, config.clusters)
+        self.weights_iter = [MS2DGBlock(config.net_channels, 6 + self.side_channel, depth_each_stage, config.clusters)
+                             for _ in range(config.iter_num)]
         self.weights_iter = nn.Sequential(*self.weights_iter)
-        
 
     def forward(self, data):
+        # 判断是否为4维，通道数为1
         assert data['xs'].dim() == 4 and data['xs'].shape[1] == 1
+        # 显示批次和样本数目
         batch_size, num_pts = data['xs'].shape[0], data['xs'].shape[2]
+        # 反转1，3即 B,C,N,X->B,X,N,C
+        # C:1 N:2000 X:4
         input = data['xs'].transpose(1,3)
+        # TODO 待进行 self.side_channel = (config.use_ratio==2) + (config.use_mutual==2)#0
         if self.side_channel > 0:
             sides = data['sides'].transpose(1,2).unsqueeze(3)
             input = torch.cat([input, sides], dim=1)
 
         res_logits, res_e_hat = [], []
+        # MS2DGBlock
+        # 返回估计值
         logits, e_hat, residual = self.weights_init(input, data['xs'])
+        # 存储
         res_logits.append(logits), res_e_hat.append(e_hat)
         logits_1 = logits
         logits_2 = torch.zeros(logits.shape).cuda()
@@ -525,17 +582,17 @@ class MS2DNET(nn.Module):
             e_hat = weighted_8points(data['xs'], logits_2)
             res_logits.append(logits_2), res_e_hat.append(e_hat)
 
-        return res_logits, res_e_hat  
+        return res_logits, res_e_hat
 
 
-        
+
 def batch_symeig(X):
     # it is much faster to run symeig on CPU
     X = X.cpu()
     b, d, _ = X.size()
     bv = X.new(b,d,d)
     for batch_idx in range(X.shape[0]):
-        # DEbuge
+        # NOTICE 3.8之后的对称矩阵上三角求特征向量和特征值
         # e,v = torch.symeig(X[batch_idx,:,:].squeeze(), True)
         e, v = torch.linalg.eigh(X[batch_idx, :, :].squeeze(), UPLO='U')
         bv[batch_idx,:,:] = v
