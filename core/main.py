@@ -12,7 +12,8 @@ import torch.utils.data
 import sys
 from data import collate_fn, CorrespondencesDataset
 #from oan_000 import OANet as Model
-from PMANet import MS2DNET as Model
+#from PMANet import MS2DNET as Model
+from icml import CLNet as Model
 #from ADFNet import ADFNET as Model
 from train import train
 from test import test

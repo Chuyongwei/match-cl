@@ -79,6 +79,7 @@ def train(model, train_loader, valid_loader, config):
 
         # run training
         cur_lr = optimizer.param_groups[0]['lr']
+        # TAG 训练
         loss_vals = train_step(step, optimizer, model, match_loss, train_data, scheduler)
         logger_train.append([cur_lr] + loss_vals)
 

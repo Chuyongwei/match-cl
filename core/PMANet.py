@@ -501,7 +501,6 @@ class MS2DGBlock(nn.Module):
         x = torch.cat((x, x_SDG1, x_SDG2, x_SDG3), dim=1)  
 
 
-
         x1_1 = self.l1_1(x)
         x_down = self.down1(x1_1)
         x2 = self.l2(x_down)
@@ -521,7 +520,9 @@ class MS2DGBlock(nn.Module):
         return logits, e_hat, residual
 
 
+# MS2DG
 class MS2DNET(nn.Module):
+    # MS2DG
     def __init__(self, config):
         nn.Module.__init__(self)
         self.iter_num = config.iter_num
@@ -534,6 +535,7 @@ class MS2DNET(nn.Module):
         self.weights_iter = [MS2DGBlock(config.net_channels, 6 + self.side_channel, depth_each_stage, config.clusters)
                              for _ in range(config.iter_num)]
         self.weights_iter = nn.Sequential(*self.weights_iter)
+
 
     def forward(self, data):
         # 判断是否为4维，通道数为1
@@ -582,7 +584,7 @@ class MS2DNET(nn.Module):
             e_hat = weighted_8points(data['xs'], logits_2)
             res_logits.append(logits_2), res_e_hat.append(e_hat)
 
-        return res_logits, res_e_hat
+        return res_logits, res_e_hat 
 
 
 
